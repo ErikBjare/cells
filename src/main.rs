@@ -20,8 +20,7 @@ use sdl2_window::Sdl2Window;
 use window::WindowSettings;
 
 const BOARD_WIDTH: usize = 400;
-const BOARD_HEIGHT: usize = 400;
-const CELL_SIZE: f64 = 2.0;
+const BOARD_HEIGHT: usize = 450;
 
 const _NEIGHBORHOOD_NEUMANN: [(i32, i32); 4] = [(-1, 0), (0, -1), (0, 1), (1, 0)];
 const NEIGHBORHOOD_MOORE: [(i32, i32); 8] = [
@@ -203,12 +202,28 @@ fn main() {
     let ref mut gl = GlGraphics::new(opengl);
     let (fbo, texture) = build_fbo(&window);
 
+    let mut cell_size: f64 = 2.0;
+
     let mut event_settings = EventSettings::new().lazy(false);
-    event_settings.ups = 20;
+    event_settings.ups = 60;
     event_settings.max_fps = 60;
 
     let mut events = Events::new(event_settings);
     while let Some(event) = events.next(&mut window) {
+        event.release(|button| match button {
+            Button::Keyboard(key) => println!("Released keyboard key '{:?}'", key),
+            Button::Mouse(button) => println!("Released mouse button '{:?}'", button),
+            _ => println!("Released thing `{:?}`", button),
+        });
+
+        event.mouse_scroll(|args| {
+            cell_size *= if args[1] > 0.0 { 1.5 } else { 0.75 };
+        });
+
+        //event.mouse_cursor(|args| {
+        //    println!("{:?}", args);
+        //});
+
         // Computes the next generation
         event.update(|_args| {
             //println!("{:?}", _args);
@@ -230,8 +245,8 @@ fn main() {
                     [
                         0.0,
                         0.0,
-                        CELL_SIZE * BOARD_WIDTH as f64,
-                        CELL_SIZE * BOARD_HEIGHT as f64,
+                        cell_size * BOARD_WIDTH as f64,
+                        cell_size * BOARD_HEIGHT as f64,
                     ],
                     c.transform,
                     g,
@@ -243,10 +258,10 @@ fn main() {
                             graphics::rectangle(
                                 rule.color(cell_val),
                                 [
-                                    i as f64 * CELL_SIZE,
-                                    j as f64 * CELL_SIZE,
-                                    CELL_SIZE,
-                                    CELL_SIZE,
+                                    i as f64 * cell_size,
+                                    j as f64 * cell_size,
+                                    cell_size,
+                                    cell_size,
                                 ],
                                 c.transform,
                                 g,
@@ -271,7 +286,7 @@ fn main() {
                     &texture,
                     &c.draw_state,
                     c.transform
-                        .prepend_transform(graphics::math::scale(-1., 1.)),
+                        .prepend_transform(graphics::math::scale(1., -1.)),
                     g,
                 );
             });
