@@ -8,3 +8,20 @@ edition = "2018"
 
 [dependencies]
 piston_window = "0.98.0"
+rand = "0.6.5"
+
+[dev-dependencies]
+criterion = "0.2"
+
+[[bench]]
+name = "benchmark"
+harness = false
+
+[profile.release]
+debug = true
+lto = false
+opt-level = 2
+
+[profile.bench]
+debug = true
+opt-level = 2
