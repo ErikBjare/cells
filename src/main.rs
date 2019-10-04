@@ -1,18 +1,17 @@
 extern crate gl;
 extern crate graphics;
 extern crate opengl_graphics;
+extern crate palette;
 extern crate piston;
 extern crate piston_window;
 extern crate rand;
 extern crate window;
 
-extern crate palette;
-use palette::{Hsv, LinSrgb};
-
 use gl::types::GLuint;
 use graphics::image::Image;
 use graphics::Transformed;
 use opengl_graphics::{GlGraphics, OpenGL, Texture, TextureSettings};
+use palette::{Hsv, LinSrgb};
 use piston::event_loop::*;
 use piston::input::*;
 use piston_window::{OpenGLWindow, PistonWindow, Window};
@@ -20,9 +19,9 @@ use rand::Rng;
 use sdl2_window::Sdl2Window;
 use window::WindowSettings;
 
-const BOARD_WIDTH: usize = 300;
-const BOARD_HEIGHT: usize = 300;
-const CELL_SIZE: f64 = 3.0;
+const BOARD_WIDTH: usize = 400;
+const BOARD_HEIGHT: usize = 400;
+const CELL_SIZE: f64 = 2.0;
 
 const _NEIGHBORHOOD_NEUMANN: [(i32, i32); 4] = [(-1, 0), (0, -1), (0, 1), (1, 0)];
 const NEIGHBORHOOD_MOORE: [(i32, i32); 8] = [
@@ -36,26 +35,33 @@ const NEIGHBORHOOD_MOORE: [(i32, i32); 8] = [
     (1, 1),
 ];
 
+// Change this to one of [LifeRule, CyclicRule] to change the ruleset for the automata
+type ActiveRule = CyclicRule;
 type CellValue = i32;
 
 trait Rule {
-    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue;
-    fn color(board: &Board, val: CellValue) -> [f32; 4];
-    fn next_gen(board: &Board) -> Board {
+    fn states(&self) -> i32;
+    fn apply(&self, board: &Board, pos: &(usize, usize)) -> CellValue;
+    fn color(&self, val: CellValue) -> [f32; 4];
+    fn next_gen(&self, board: &Board) -> Board {
         let mut f_next = board.clone();
         for i in 0..BOARD_WIDTH {
             for j in 0..BOARD_HEIGHT {
-                f_next.arr[i][j] = Self::apply(board, &(i, j));
+                f_next.arr[i][j] = self.apply(board, &(i, j));
             }
         }
         f_next
     }
 }
 
+#[derive(Default)]
 struct LifeRule {}
 
 impl Rule for LifeRule {
-    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue {
+    fn states(&self) -> i32 {
+        2
+    }
+    fn apply(&self, board: &Board, pos: &(usize, usize)) -> CellValue {
         let dims: (i32, i32) = (BOARD_WIDTH as i32, BOARD_HEIGHT as i32);
         let pos_i: (i32, i32) = (pos.0 as i32, pos.1 as i32);
         let mut alive_neighbors: i32 = 0;
@@ -76,15 +82,19 @@ impl Rule for LifeRule {
             0
         }
     }
-    fn color(board: &Board, val: CellValue) -> [f32; 4] {
+    fn color(&self, val: CellValue) -> [f32; 4] {
         [val as f32, val as f32, val as f32, 1.0]
     }
 }
 
+#[derive(Default)]
 struct CyclicRule {}
 
 impl Rule for CyclicRule {
-    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue {
+    fn states(&self) -> i32 {
+        12
+    }
+    fn apply(&self, board: &Board, pos: &(usize, usize)) -> CellValue {
         let dims: (i32, i32) = (BOARD_WIDTH as i32, BOARD_HEIGHT as i32);
         let pos_i: (i32, i32) = (pos.0 as i32, pos.1 as i32);
         let center_val = board.arr[pos.0][pos.1];
@@ -95,17 +105,17 @@ impl Rule for CyclicRule {
                 (pos_i.1 + dims.1 + *x2) as usize,
             );
             if board.arr[check_pos.0 % BOARD_WIDTH][check_pos.1 % BOARD_HEIGHT]
-                == (center_val + 1) % board.states
+                == (center_val + 1) % self.states()
             {
-                return_val = (center_val + 1) % board.states;
+                return_val = (center_val + 1) % self.states();
                 break;
             }
         }
         return_val
     }
-    fn color(board: &Board, val: CellValue) -> [f32; 4] {
+    fn color(&self, val: CellValue) -> [f32; 4] {
         let c = LinSrgb::from(Hsv::new(
-            360.0 * (val as f64) / (board.states as f64),
+            360.0 * (val as f64) / (self.states() as f64),
             1.0,
             1.0,
         ));
@@ -117,14 +127,13 @@ impl Rule for CyclicRule {
 #[derive(Clone)]
 struct Board {
     arr: [[CellValue; BOARD_HEIGHT]; BOARD_WIDTH],
-    states: i32,
 }
 
 impl Board {
-    fn randomize(&mut self) {
+    fn randomize(&mut self, rule: &dyn Rule) {
         for i in 0..BOARD_WIDTH {
             for j in 0..BOARD_HEIGHT {
-                let num = rand::thread_rng().gen_range(0, self.states);
+                let num = rand::thread_rng().gen_range(0, rule.states());
                 self.arr[i][j] = num;
             }
         }
@@ -135,7 +144,6 @@ impl Default for Board {
     fn default() -> Self {
         Self {
             arr: [[0; BOARD_HEIGHT]; BOARD_WIDTH],
-            states: 8,
         }
     }
 }
@@ -174,8 +182,6 @@ fn build_fbo(window: &dyn Window) -> (GLuint, Texture) {
     (fbo, texture)
 }
 
-type ActiveRule = CyclicRule;
-
 fn main() {
     let opengl = OpenGL::V3_2;
     let window_settings = WindowSettings::new("Cells", [1920, 1080])
@@ -184,33 +190,43 @@ fn main() {
     let mut window: PistonWindow<Sdl2Window> = window_settings.build().expect("window");
     gl::load_with(|s| window.window.get_proc_address(s) as *const _);
 
-    // Initialize
+    // Initialize board & rule
     let mut board: Board = Default::default();
-    board.randomize();
+    let rule: ActiveRule = Default::default();
+    board.randomize(&rule);
 
-    // Will be used to check diff
+    let fade_stale = false;
+
+    // Will be used to store the previous generation
     let mut last_gen: Board = board.clone();
 
     let ref mut gl = GlGraphics::new(opengl);
     let (fbo, texture) = build_fbo(&window);
 
-    let mut events = Events::new(EventSettings::new().lazy(false));
+    let mut event_settings = EventSettings::new().lazy(false);
+    event_settings.ups = 20;
+    event_settings.max_fps = 60;
+
+    let mut events = Events::new(event_settings);
     while let Some(event) = events.next(&mut window) {
         // Computes the next generation
         event.update(|_args| {
+            //println!("{:?}", _args);
             last_gen = board.clone();
-            board = ActiveRule::next_gen(&board);
+            board = rule.next_gen(&board);
         });
 
         // This was a massive help: https://stackoverflow.com/questions/47855009/how-do-i-stop-piston-from-making-the-screen-flash-when-i-dont-call-graphicsc
         event.render(|args| {
-            // Switch to the texture framebuffer and draw the cursor
+            //println!("{:?}", args);
+
+            // Switch to the texture framebuffer and draw the board
             unsafe {
                 gl::BindFramebuffer(gl::FRAMEBUFFER, fbo);
             }
             gl.draw(args.viewport(), |c, g| {
                 graphics::rectangle(
-                    [0.0, 0.0, 0.0, 0.1],
+                    [0.0, 0.0, 0.0, if fade_stale { 0.05 } else { 1.0 }],
                     [
                         0.0,
                         0.0,
@@ -225,7 +241,7 @@ fn main() {
                         let cell_val = board.arr[i][j];
                         if cell_val != last_gen.arr[i][j] {
                             graphics::rectangle(
-                                ActiveRule::color(&board, cell_val),
+                                rule.color(cell_val),
                                 [
                                     i as f64 * CELL_SIZE,
                                     j as f64 * CELL_SIZE,
