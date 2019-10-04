@@ -6,6 +6,9 @@ extern crate piston_window;
 extern crate rand;
 extern crate window;
 
+extern crate palette;
+use palette::{Hsv, LinSrgb};
+
 use gl::types::GLuint;
 use graphics::image::Image;
 use graphics::Transformed;
@@ -35,29 +38,96 @@ const NEIGHBORHOOD_MOORE: [(i32, i32); 8] = [
 
 type CellValue = i32;
 
+trait Rule {
+    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue;
+    fn color(board: &Board, val: CellValue) -> [f32; 4];
+    fn next_gen(board: &Board) -> Board {
+        let mut f_next = board.clone();
+        for i in 0..BOARD_WIDTH {
+            for j in 0..BOARD_HEIGHT {
+                f_next.arr[i][j] = Self::apply(board, &(i, j));
+            }
+        }
+        f_next
+    }
+}
+
+struct LifeRule {}
+
+impl Rule for LifeRule {
+    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue {
+        let dims: (i32, i32) = (BOARD_WIDTH as i32, BOARD_HEIGHT as i32);
+        let pos_i: (i32, i32) = (pos.0 as i32, pos.1 as i32);
+        let mut alive_neighbors: i32 = 0;
+        for (x1, x2) in &NEIGHBORHOOD_MOORE {
+            let check_pos: (usize, usize) = (
+                (pos_i.0 + dims.0 + *x1) as usize,
+                (pos_i.1 + dims.1 + *x2) as usize,
+            );
+            alive_neighbors += board.arr[check_pos.0 % BOARD_WIDTH][check_pos.1 % BOARD_HEIGHT];
+        }
+        if alive_neighbors <= 1 {
+            0
+        } else if alive_neighbors == 2 {
+            board.arr[pos.0][pos.1]
+        } else if alive_neighbors == 3 {
+            1
+        } else {
+            0
+        }
+    }
+    fn color(board: &Board, val: CellValue) -> [f32; 4] {
+        [val as f32, val as f32, val as f32, 1.0]
+    }
+}
+
+struct CyclicRule {}
+
+impl Rule for CyclicRule {
+    fn apply(board: &Board, pos: &(usize, usize)) -> CellValue {
+        let dims: (i32, i32) = (BOARD_WIDTH as i32, BOARD_HEIGHT as i32);
+        let pos_i: (i32, i32) = (pos.0 as i32, pos.1 as i32);
+        let center_val = board.arr[pos.0][pos.1];
+        let mut return_val = center_val;
+        for (x1, x2) in &NEIGHBORHOOD_MOORE {
+            let check_pos: (usize, usize) = (
+                (pos_i.0 + dims.0 + *x1) as usize,
+                (pos_i.1 + dims.1 + *x2) as usize,
+            );
+            if board.arr[check_pos.0 % BOARD_WIDTH][check_pos.1 % BOARD_HEIGHT]
+                == (center_val + 1) % board.states
+            {
+                return_val = (center_val + 1) % board.states;
+                break;
+            }
+        }
+        return_val
+    }
+    fn color(board: &Board, val: CellValue) -> [f32; 4] {
+        let c = LinSrgb::from(Hsv::new(
+            360.0 * (val as f64) / (board.states as f64),
+            1.0,
+            1.0,
+        ));
+        let (r, g, b) = c.into_components();
+        [r as f32, g as f32, b as f32, 1.0]
+    }
+}
+
 #[derive(Clone)]
 struct Board {
     arr: [[CellValue; BOARD_HEIGHT]; BOARD_WIDTH],
+    states: i32,
 }
 
 impl Board {
     fn randomize(&mut self) {
         for i in 0..BOARD_WIDTH {
             for j in 0..BOARD_HEIGHT {
-                let num = rand::thread_rng().gen_range(0, 2);
+                let num = rand::thread_rng().gen_range(0, self.states);
                 self.arr[i][j] = num;
             }
         }
-    }
-
-    fn next_gen(&self) -> Self {
-        let mut f_next = self.clone();
-        for i in 0..BOARD_WIDTH {
-            for j in 0..BOARD_HEIGHT {
-                f_next.arr[i][j] = rule_life(self, &(i, j));
-            }
-        }
-        f_next
     }
 }
 
@@ -65,6 +135,7 @@ impl Default for Board {
     fn default() -> Self {
         Self {
             arr: [[0; BOARD_HEIGHT]; BOARD_WIDTH],
+            states: 8,
         }
     }
 }
@@ -103,6 +174,8 @@ fn build_fbo(window: &dyn Window) -> (GLuint, Texture) {
     (fbo, texture)
 }
 
+type ActiveRule = CyclicRule;
+
 fn main() {
     let opengl = OpenGL::V3_2;
     let window_settings = WindowSettings::new("Cells", [1920, 1080])
@@ -112,8 +185,11 @@ fn main() {
     gl::load_with(|s| window.window.get_proc_address(s) as *const _);
 
     // Initialize
-    let mut f: Board = Default::default();
-    f.randomize();
+    let mut board: Board = Default::default();
+    board.randomize();
+
+    // Will be used to check diff
+    let mut last_gen: Board = board.clone();
 
     let ref mut gl = GlGraphics::new(opengl);
     let (fbo, texture) = build_fbo(&window);
@@ -122,7 +198,8 @@ fn main() {
     while let Some(event) = events.next(&mut window) {
         // Computes the next generation
         event.update(|_args| {
-            f = f.next_gen();
+            last_gen = board.clone();
+            board = ActiveRule::next_gen(&board);
         });
 
         // This was a massive help: https://stackoverflow.com/questions/47855009/how-do-i-stop-piston-from-making-the-screen-flash-when-i-dont-call-graphicsc
@@ -133,7 +210,7 @@ fn main() {
             }
             gl.draw(args.viewport(), |c, g| {
                 graphics::rectangle(
-                    [0.0, 0.0, 0.0, 0.2],
+                    [0.0, 0.0, 0.0, 0.1],
                     [
                         0.0,
                         0.0,
@@ -145,10 +222,10 @@ fn main() {
                 );
                 for i in 0..BOARD_WIDTH {
                     for j in 0..BOARD_HEIGHT {
-                        let cell_val: f32 = f.arr[i][j] as f32;
-                        if cell_val != 0.0 {
+                        let cell_val = board.arr[i][j];
+                        if cell_val != last_gen.arr[i][j] {
                             graphics::rectangle(
-                                [cell_val, cell_val, cell_val, 1.0],
+                                ActiveRule::color(&board, cell_val),
                                 [
                                     i as f64 * CELL_SIZE,
                                     j as f64 * CELL_SIZE,
@@ -183,27 +260,5 @@ fn main() {
                 );
             });
         });
-    }
-}
-
-fn rule_life(board: &Board, pos: &(usize, usize)) -> CellValue {
-    let dims: (i32, i32) = (BOARD_WIDTH as i32, BOARD_HEIGHT as i32);
-    let pos_i: (i32, i32) = (pos.0 as i32, pos.1 as i32);
-    let mut alive_neighbors: i32 = 0;
-    for (x1, x2) in &NEIGHBORHOOD_MOORE {
-        let check_pos: (usize, usize) = (
-            (pos_i.0 + dims.0 + *x1) as usize,
-            (pos_i.1 + dims.1 + *x2) as usize,
-        );
-        alive_neighbors += board.arr[check_pos.0 % BOARD_WIDTH][check_pos.1 % BOARD_HEIGHT];
-    }
-    if alive_neighbors <= 1 {
-        0
-    } else if alive_neighbors == 2 {
-        board.arr[pos.0][pos.1]
-    } else if alive_neighbors == 3 {
-        1
-    } else {
-        0
     }
 }

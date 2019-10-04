@@ -18,6 +18,7 @@ pistoncore-sdl2_window = "0.63.0"
 shader_version = "0.6.0"
 gl = "0.14.0"
 rand = "0.6.5"
+palette = "0.4"
 
 [dev-dependencies]
 criterion = "0.2"
